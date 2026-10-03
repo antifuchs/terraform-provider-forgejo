@@ -145,3 +145,96 @@ resource "forgejo_ssh_key" "test" {
 		},
 	})
 }
+
+func TestAccSSHKeyResourceForAuthedUser(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		ExternalProviders: map[string]resource.ExternalProvider{
+			"tls": {
+				Source: "hashicorp/tls",
+			},
+		},
+		Steps: []resource.TestStep{
+			// Create and Read testing, without a user set
+			{
+				Config: providerConfig + `
+resource "tls_private_key" "test" {
+	algorithm = "ED25519"
+}
+resource "forgejo_ssh_key" "test" {
+	key   = trimspace(tls_private_key.test.public_key_openssh)
+	title = "tftest_userless"
+}`,
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction("forgejo_ssh_key.test", plancheck.ResourceActionCreate),
+					},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue("forgejo_ssh_key.test", tfjsonpath.New("created_at"), knownvalue.NotNull()),
+					statecheck.ExpectKnownValue("forgejo_ssh_key.test", tfjsonpath.New("fingerprint"), knownvalue.StringRegexp(regexp.MustCompile("^SHA256:.{43}$"))),
+					statecheck.ExpectKnownValue("forgejo_ssh_key.test", tfjsonpath.New("key_id"), knownvalue.NotNull()),
+					statecheck.ExpectKnownValue("forgejo_ssh_key.test", tfjsonpath.New("key"), knownvalue.StringRegexp(regexp.MustCompile("^ssh-ed25519 .{68}$"))),
+					statecheck.ExpectKnownValue("forgejo_ssh_key.test", tfjsonpath.New("read_only"), knownvalue.Bool(false)),
+					statecheck.ExpectKnownValue("forgejo_ssh_key.test", tfjsonpath.New("title"), knownvalue.StringExact("tftest_userless")),
+					statecheck.ExpectKnownValue("forgejo_ssh_key.test", tfjsonpath.New("url"), knownvalue.StringRegexp(regexp.MustCompile("^"+forgejoTestHost+"/api/v1/user/keys/[0-9]+$"))),
+					statecheck.ExpectKnownValue("forgejo_ssh_key.test", tfjsonpath.New("user"), knownvalue.StringExact(forgejoTestUser)),
+					statecheck.ExpectKnownValue("forgejo_ssh_key.test", tfjsonpath.New("key_type"), knownvalue.StringExact("user")),
+				},
+			},
+
+			// Create and Read testing (duplicate key)
+			{
+				Config: providerConfig + `
+resource "tls_private_key" "test" {
+	algorithm = "ED25519"
+}
+resource "forgejo_ssh_key" "test" {
+	key   = trimspace(tls_private_key.test.public_key_openssh)
+	title = "tftest_self"
+}
+resource "forgejo_ssh_key" "duplicate" {
+	key   = trimspace(tls_private_key.test.public_key_openssh)
+	title = "tftest_self"
+}`,
+				ExpectError: regexp.MustCompile("Input validation error: Key content has been used as non-deploy key"),
+			},
+
+			// Create and recreate testing in a migration from key with user to key without
+			{
+				Config: providerConfig + `
+resource "tls_private_key" "test" {
+	algorithm = "ED25519"
+}
+resource "forgejo_ssh_key" "test" {
+	user = "` + forgejoTestUser + `"
+	key   = trimspace(tls_private_key.test.public_key_openssh)
+	title = "tftest_owned"
+}
+				`,
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction("forgejo_ssh_key.test", plancheck.ResourceActionCreate),
+					},
+				},
+			},
+			{
+				Config: providerConfig + `
+resource "tls_private_key" "test" {
+	algorithm = "ED25519"
+}
+resource "forgejo_ssh_key" "test" {
+	key   = trimspace(tls_private_key.test.public_key_openssh)
+	title = "tftest_owned"
+}
+				`,
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction("forgejo_ssh_key.test", plancheck.ResourceActionNoop),
+					},
+				},
+			},
+		},
+	})
+}
